@@ -147,12 +147,16 @@ mongoose.connect(MONGODB_URI)
 
 // 5. Lightweight HTTP Server for Health Checks
 const PORT = process.env.PORT || 3088;
+const HOST = process.env.HOST || '0.0.0.0';
+const RAILWAY_INTERNAL_URL = process.env.RAILWAY_INTERNAL_URL || 'http://autocloseandopenoft5herestaurentapplication.railway.internal';
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health' || req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'healthy',
       time: new Date().toISOString(),
+      railwayInternalUrl: RAILWAY_INTERNAL_URL,
       scheduler: lastRunStatus
     }, null, 2));
   } else {
@@ -164,14 +168,16 @@ const server = http.createServer((req, res) => {
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.warn(`Port ${PORT} is in use, retrying on a random free port...`);
-    server.listen(0);
+    server.listen(0, HOST);
   } else {
     console.error('Server error:', err);
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const address = server.address();
   const actualPort = typeof address === 'string' ? address : address.port;
-  console.log(`Health check server listening on port ${actualPort}`);
+  console.log(`Health check server listening on http://${HOST}:${actualPort}`);
+  console.log(`Railway Internal Domain: ${RAILWAY_INTERNAL_URL}`);
 });
+
