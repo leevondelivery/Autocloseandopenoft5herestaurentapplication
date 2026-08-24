@@ -51,22 +51,15 @@ function parseTimeToMinutes(timeStr) {
 
 function getCurrentISTMinutes() {
   const now = new Date();
-  const options = {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  };
-  const formatter = new Intl.DateTimeFormat('en-GB', options);
-  const formatted = formatter.format(now);
-  
-  const parts = formatted.split(':');
-  const h = parseInt(parts[0], 10) % 24;
-  const m = parseInt(parts[1], 10);
+  // IST is UTC + 5:30 (+330 minutes)
+  const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const istMins = (utcMins + 330) % 1440;
+  const h = Math.floor(istMins / 60);
+  const m = istMins % 60;
   const timeString = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   return {
     timeString,
-    minutes: h * 60 + m
+    minutes: istMins
   };
 }
 
@@ -101,7 +94,7 @@ async function checkAndUpdateRestaurantStatuses() {
   console.log(`[${new Date().toISOString()}] Running scheduler check. Current Time (IST): ${currentTimeIST}`);
   
   try {
-    const users = await RestaurantUser.find({}, { restId: 1, openTime: 1, closeTime: 1, isActive: 1 }).lean();
+    const users = await RestaurantUser.find({}).lean();
 
     const bulkOps = [];
     const updated = [];
@@ -118,7 +111,8 @@ async function checkAndUpdateRestaurantStatuses() {
             filter: { _id: user._id },
             update: { 
               $set: { 
-                isActive: shouldBeActive
+                isActive: shouldBeActive,
+                manualStatusUpdatedAt: new Date()
               } 
             }
           }
@@ -126,6 +120,7 @@ async function checkAndUpdateRestaurantStatuses() {
 
         updated.push({
           restaurantId: user.restId || user._id,
+          name: user.name || 'N/A',
           prevStatus: currentActive === undefined ? 'N/A' : currentActive,
           newStatus: shouldBeActive,
           openTime: user.openTime,
@@ -137,10 +132,10 @@ async function checkAndUpdateRestaurantStatuses() {
     if (bulkOps.length > 0) {
       console.log(`Found ${bulkOps.length} status changes to apply:`);
       updated.forEach(item => {
-        console.log(` - Restaurant ${item.restaurantId}: ${item.prevStatus} -> ${item.newStatus} (Open: ${item.openTime}, Close: ${item.closeTime})`);
+        console.log(` - Restaurant ${item.name} (ID: ${item.restaurantId}): ${item.prevStatus} -> ${item.newStatus} (Open: ${item.openTime}, Close: ${item.closeTime})`);
       });
 
-      await RestaurantUser.bulkWrite(bulkOps);
+      await RestaurantUser.bulkWrite(bulkOps, { ordered: false });
       console.log('Successfully updated restaurant statuses in restuarentusers collection.');
     } else {
       console.log('All restaurant statuses are already up to date.');
