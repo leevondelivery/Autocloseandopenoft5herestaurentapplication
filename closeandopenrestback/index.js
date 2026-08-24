@@ -41,7 +41,7 @@ function isOpen(currentTime, openTime, closeTime) {
   if (openTime === closeTime) return true;
 
   if (openTime < closeTime) {
-    // Normal day shift (e.g. 09:00 to 22:00)
+
     return currentTime >= openTime && currentTime < closeTime;
   } else {
     // Night shift spanning midnight (e.g. 18:00 to 02:00)
@@ -49,7 +49,7 @@ function isOpen(currentTime, openTime, closeTime) {
   }
 }
 
-// 3. Status Updater Logic
+
 let lastRunStatus = {
   success: true,
   timestamp: null,
@@ -145,7 +145,6 @@ mongoose.connect(MONGODB_URI)
     process.exit(1);
   });
 
-// 5. Lightweight HTTP Server for Health Checks
 const PORT = process.env.PORT || 3088;
 const HOST = process.env.HOST || '0.0.0.0';
 const RAILWAY_INTERNAL_URL = process.env.RAILWAY_INTERNAL_URL || 'http://autocloseandopenoft5herestaurentapplication.railway.internal';
