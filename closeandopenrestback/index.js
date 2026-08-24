@@ -22,32 +22,72 @@ const restaurantUserSchema = new mongoose.Schema({
 const RestaurantUser = mongoose.model('RestaurantUser', restaurantUserSchema);
 
 // 2. Time Helper Functions
-function getCurrentTimeInIST() {
+function parseTimeToMinutes(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return null;
+  
+  const str = timeStr.trim().toUpperCase();
+  
+  // 12-hour format with AM/PM (e.g. "11:30 AM", "9:00PM", "06:00 PM")
+  const ampmMatch = str.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+  if (ampmMatch) {
+    let hours = parseInt(ampmMatch[1], 10);
+    const minutes = parseInt(ampmMatch[2], 10);
+    const ampm = ampmMatch[3];
+    if (ampm === 'PM' && hours < 12) hours += 12;
+    if (ampm === 'AM' && hours === 12) hours = 0;
+    return hours * 60 + minutes;
+  }
+
+  // 24-hour format (e.g. "11:30", "09:00", "9:00", "22:00")
+  const match24 = str.match(/^(\d{1,2}):(\d{2})/);
+  if (match24) {
+    const hours = parseInt(match24[1], 10);
+    const minutes = parseInt(match24[2], 10);
+    return hours * 60 + minutes;
+  }
+
+  return null;
+}
+
+function getCurrentISTMinutes() {
+  const now = new Date();
   const options = {
     timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false
   };
-  // 'en-GB' format returns HH:MM in 24-hour style
   const formatter = new Intl.DateTimeFormat('en-GB', options);
-  return formatter.format(new Date());
+  const formatted = formatter.format(now);
+  
+  const parts = formatted.split(':');
+  const h = parseInt(parts[0], 10) % 24;
+  const m = parseInt(parts[1], 10);
+  const timeString = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return {
+    timeString,
+    minutes: h * 60 + m
+  };
 }
 
-function isOpen(currentTime, openTime, closeTime) {
-  if (!openTime || !closeTime) return false;
-  
-  if (openTime === closeTime) return true;
+function isOpen(currentMins, openTimeStr, closeTimeStr) {
+  const openMins = parseTimeToMinutes(openTimeStr);
+  const closeMins = parseTimeToMinutes(closeTimeStr);
 
-  if (openTime < closeTime) {
+  if (openMins === null || closeMins === null) {
+    return false;
+  }
 
-    return currentTime >= openTime && currentTime < closeTime;
+  // If open and close times are the same, treat as open 24h/always open
+  if (openMins === closeMins) return true;
+
+  if (openMins < closeMins) {
+    return currentMins >= openMins && currentMins < closeMins;
   } else {
- 
-    return currentTime >= openTime || currentTime < closeTime;
+    // Night shift spanning midnight (e.g. 18:00 to 04:00)
+    return currentMins >= openMins || currentMins < closeMins;
   }
 }
-
 
 let lastRunStatus = {
   success: true,
@@ -57,8 +97,8 @@ let lastRunStatus = {
 };
 
 async function checkAndUpdateRestaurantStatuses() {
-  const currentTime = getCurrentTimeInIST();
-  console.log(`[${new Date().toISOString()}] Running scheduler check. Current Time (IST): ${currentTime}`);
+  const { timeString: currentTimeIST, minutes: currentMins } = getCurrentISTMinutes();
+  console.log(`[${new Date().toISOString()}] Running scheduler check. Current Time (IST): ${currentTimeIST}`);
   
   try {
     const users = await RestaurantUser.find({}, { restId: 1, openTime: 1, closeTime: 1, isActive: 1 }).lean();
@@ -67,9 +107,9 @@ async function checkAndUpdateRestaurantStatuses() {
     const updated = [];
 
     for (const user of users) {
-      if (!user.restId) continue;
+      if (!user._id) continue;
 
-      const shouldBeActive = isOpen(currentTime, user.openTime, user.closeTime);
+      const shouldBeActive = isOpen(currentMins, user.openTime, user.closeTime);
       const currentActive = user.isActive;
 
       if (currentActive === undefined || currentActive !== shouldBeActive) {
@@ -85,7 +125,7 @@ async function checkAndUpdateRestaurantStatuses() {
         });
 
         updated.push({
-          restaurantId: user.restId,
+          restaurantId: user.restId || user._id,
           prevStatus: currentActive === undefined ? 'N/A' : currentActive,
           newStatus: shouldBeActive,
           openTime: user.openTime,
@@ -109,7 +149,7 @@ async function checkAndUpdateRestaurantStatuses() {
     lastRunStatus = {
       success: true,
       timestamp: new Date().toISOString(),
-      currentTimeIST: currentTime,
+      currentTimeIST,
       message: `Processed ${users.length} restaurants. Applied ${bulkOps.length} updates.`,
       updatedRestaurants: updated
     };
@@ -119,7 +159,7 @@ async function checkAndUpdateRestaurantStatuses() {
     lastRunStatus = {
       success: false,
       timestamp: new Date().toISOString(),
-      currentTimeIST: currentTime,
+      currentTimeIST,
       message: `Error: ${error.message}`,
       updatedRestaurants: []
     };
