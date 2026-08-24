@@ -137,7 +137,6 @@ mongoose.connect(MONGODB_URI)
     // Run status check immediately on startup
     checkAndUpdateRestaurantStatuses();
 
-    // Schedule status check to run every minute
     cron.schedule('* * * * *', () => {
       checkAndUpdateRestaurantStatuses();
     });
