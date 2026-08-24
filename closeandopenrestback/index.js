@@ -73,7 +73,6 @@ async function checkAndUpdateRestaurantStatuses() {
       const shouldBeActive = isOpen(currentTime, user.openTime, user.closeTime);
       const currentActive = user.isActive;
 
-      // Only perform update if status is different or record doesn't exist
       if (currentActive === undefined || currentActive !== shouldBeActive) {
         bulkOps.push({
           updateOne: {
@@ -133,8 +132,7 @@ console.log('Connecting to MongoDB...');
 mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB successfully!');
-    
-    // Run status check immediately on startup
+
     checkAndUpdateRestaurantStatuses();
 
     cron.schedule('* * * * *', () => {
