@@ -76,7 +76,6 @@ function parseTimeToMinutes(timeStr) {
     return hours * 60 + minutes;
   }
 
-  // 24-hour format (with or without seconds, e.g. "11:30", "09:00", "9:00", "22:00:00")
   const match24 = str.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
   if (match24) {
     const hours = parseInt(match24[1], 10);
