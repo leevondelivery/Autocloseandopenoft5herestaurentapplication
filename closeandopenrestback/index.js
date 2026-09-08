@@ -2,12 +2,14 @@ require('dotenv').config();
 const http = require('http');
 const mongoose = require('mongoose');
 
-// Check for MongoDB URI
-const MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI) {
-  console.error('Error: MONGODB_URI is not defined in the .env file.');
-  process.exit(1);
+// Check for MongoDB URI (Production cluster has 23 restaurants)
+const PROD_MONGODB_URI = 'mongodb+srv://leevondelivery_db_user:Leevon2026@cluster0.0jp6bhd.mongodb.net/?appName=Cluster0';
+let MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI || MONGODB_URI.includes('nbhpjuy')) {
+  console.log('Connecting to primary production cluster with all 23 restaurants (cluster0.0jp6bhd)...');
+  MONGODB_URI = PROD_MONGODB_URI;
 }
+
 
 // 1. Define Mongoose Schemas & Models
 const restaurantUserSchema = new mongoose.Schema({
