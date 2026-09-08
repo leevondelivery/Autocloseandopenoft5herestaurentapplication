@@ -4,11 +4,20 @@ const mongoose = require('mongoose');
 
 // Check for MongoDB URI (Production cluster has 23 restaurants)
 const PROD_MONGODB_URI = 'mongodb+srv://leevondelivery_db_user:Leevon2026@cluster0.0jp6bhd.mongodb.net/?appName=Cluster0';
-let MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI || MONGODB_URI.includes('nbhpjuy')) {
+
+let rawUri = (process.env.MONGODB_URI || '').trim().replace(/^["']|["']$/g, '');
+let MONGODB_URI = rawUri;
+
+// If URI is missing, has an invalid scheme, or points to the old 7-restaurant cluster, use primary production URI
+if (
+  !MONGODB_URI ||
+  (!MONGODB_URI.startsWith('mongodb://') && !MONGODB_URI.startsWith('mongodb+srv://')) ||
+  MONGODB_URI.includes('nbhpjuy')
+) {
   console.log('Connecting to primary production cluster with all 23 restaurants (cluster0.0jp6bhd)...');
   MONGODB_URI = PROD_MONGODB_URI;
 }
+
 
 
 // 1. Define Mongoose Schemas & Models
