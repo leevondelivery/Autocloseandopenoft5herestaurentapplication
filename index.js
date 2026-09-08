@@ -1,7 +1,6 @@
 require('dotenv').config();
 const http = require('http');
 const mongoose = require('mongoose');
-const cron = require('node-cron');
 
 // Check for MongoDB URI
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -11,7 +10,6 @@ if (!MONGODB_URI) {
 }
 
 // 1. Define Mongoose Schemas & Models
-// Using collection 'restuarentusers' as structured in the DB
 const restaurantUserSchema = new mongoose.Schema({
   restId: { type: String, required: true },
   name: { type: String },
@@ -26,20 +24,21 @@ const restaurantUserSchema = new mongoose.Schema({
 
 const RestaurantUser = mongoose.model('RestaurantUser', restaurantUserSchema);
 
-// 2. Time Helper Functions
+// 2. High-Precision IST Time Helpers
+const istFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false
+});
+
 function getISTTimeAndDate() {
   const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-  const parts = formatter.formatToParts(now);
+  const parts = istFormatter.formatToParts(now);
   const getPart = (type) => parts.find(p => p.type === type)?.value;
   const year = getPart('year');
   const month = getPart('month');
@@ -49,14 +48,16 @@ function getISTTimeAndDate() {
   const s = parseInt(getPart('second'), 10);
   const dateStr = `${year}-${month}-${day}`;
   const timeString = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const timeStringWithSec = `${timeString}:${String(s).padStart(2, '0')}`;
   const currentMins = h * 60 + m;
 
   return {
     dateStr,
     timeString,
+    timeStringWithSec,
     currentMins,
     seconds: s,
-    isoIST: `${dateStr}T${timeString}:${String(s).padStart(2, '0')}+05:30`
+    isoIST: `${dateStr}T${timeStringWithSec}+05:30`
   };
 }
 
@@ -99,6 +100,7 @@ function isOpen(currentMins, openTimeStr, closeTimeStr) {
 
   if (openMins < closeMins) {
     // Standard daytime shift (e.g. 11:00 to 22:00)
+    // Open from openMins up to closeMins - 1 (closes the exact second closeMins begins)
     return currentMins >= openMins && currentMins < closeMins;
   } else {
     // Overnight shift spanning midnight (e.g. 18:00 to 04:00)
@@ -116,24 +118,24 @@ function getShiftKey(istDateStr, currentMins, openTimeStr, closeTimeStr) {
   if (openMins < closeMins) {
     // Normal daytime shift (e.g. 11:00 to 22:00)
     if (currentlyOpen) {
-      return `${istDateStr}_open_${openTimeStr}`;
+      return `${istDateStr}_open_${openTimeStr}_to_${closeTimeStr}`;
     } else {
       if (currentMins < openMins) {
-        return `${istDateStr}_closed_pre_open`;
+        return `${istDateStr}_preopen_${openTimeStr}_to_${closeTimeStr}`;
       } else {
-        return `${istDateStr}_closed_post_close`;
+        return `${istDateStr}_postclose_${openTimeStr}_to_${closeTimeStr}`;
       }
     }
   } else {
     // Overnight shift spanning midnight (e.g. 18:00 to 04:00)
     if (currentlyOpen) {
       if (currentMins >= openMins) {
-        return `${istDateStr}_open_night_${openTimeStr}`;
+        return `${istDateStr}_nightopen_${openTimeStr}_to_${closeTimeStr}`;
       } else {
-        return `prev_open_night_until_${istDateStr}_${closeTimeStr}`;
+        return `prev_nightopen_until_${istDateStr}_${closeTimeStr}`;
       }
     } else {
-      return `${istDateStr}_closed_day_${closeTimeStr}_to_${openTimeStr}`;
+      return `${istDateStr}_nightclosed_${closeTimeStr}_to_${openTimeStr}`;
     }
   }
 }
@@ -146,14 +148,21 @@ let lastRunStatus = {
   respectedManualOverrides: []
 };
 
+let isProcessing = false;
+let lastLogMinute = -1;
+
 async function checkAndUpdateRestaurantStatuses() {
-  const { dateStr, timeString: currentTimeIST, currentMins } = getISTTimeAndDate();
-  console.log(`[${new Date().toISOString()}] Running scheduler check. Current Time (IST): ${currentTimeIST} (${dateStr})`);
+  if (isProcessing) return lastRunStatus;
+  isProcessing = true;
 
   try {
+    const { dateStr, timeString: currentTimeIST, timeStringWithSec, currentMins } = getISTTimeAndDate();
+
+    // Fetch live users directly from MongoDB
     const users = await RestaurantUser.find({}).lean();
 
     const bulkOps = [];
+    const statusOps = [];
     const updated = [];
     const skippedManual = [];
 
@@ -171,7 +180,7 @@ async function checkAndUpdateRestaurantStatuses() {
 
       if (isNewShiftTransition) {
         // A scheduled shift transition (openTime or closeTime) has occurred!
-        // The schedule transition takes effect and clears the manual toggle for the new shift.
+        // The schedule transition takes effect immediately and clears the manual toggle for the new shift.
         if (currentActive !== shouldBeActive || isManuallyToggled || !user.lastScheduledShift) {
           bulkOps.push({
             updateOne: {
@@ -187,8 +196,22 @@ async function checkAndUpdateRestaurantStatuses() {
             }
           });
 
+          const restIdentifier = String(user.restId || user.restaurantId || user._id);
+          statusOps.push({
+            updateOne: {
+              filter: { $or: [{ restaurantId: restIdentifier }, { restId: restIdentifier }] },
+              update: {
+                $set: {
+                  isActive: shouldBeActive,
+                  isManuallyToggled: false,
+                  manualStatusUpdatedAt: new Date()
+                }
+              }
+            }
+          });
+
           updated.push({
-            restaurantId: user.restId || user._id,
+            restaurantId: restIdentifier,
             name: user.name || 'N/A',
             prevStatus: currentActive === undefined ? 'N/A' : currentActive,
             newStatus: shouldBeActive,
@@ -209,7 +232,7 @@ async function checkAndUpdateRestaurantStatuses() {
             reason: 'Manual override active for current shift'
           });
         } else if (currentActive === undefined || currentActive !== shouldBeActive) {
-          // No manual override, but status is out of sync with current operating hours -> sync it
+          // No manual override, but status is out of sync with current operating hours -> sync it immediately
           bulkOps.push({
             updateOne: {
               filter: { _id: user._id },
@@ -223,8 +246,21 @@ async function checkAndUpdateRestaurantStatuses() {
             }
           });
 
+          const restIdentifier = String(user.restId || user.restaurantId || user._id);
+          statusOps.push({
+            updateOne: {
+              filter: { $or: [{ restaurantId: restIdentifier }, { restId: restIdentifier }] },
+              update: {
+                $set: {
+                  isActive: shouldBeActive,
+                  manualStatusUpdatedAt: new Date()
+                }
+              }
+            }
+          });
+
           updated.push({
-            restaurantId: user.restId || user._id,
+            restaurantId: restIdentifier,
             name: user.name || 'N/A',
             prevStatus: currentActive === undefined ? 'N/A' : currentActive,
             newStatus: shouldBeActive,
@@ -237,28 +273,34 @@ async function checkAndUpdateRestaurantStatuses() {
     }
 
     if (bulkOps.length > 0) {
-      console.log(`Found ${bulkOps.length} status changes to apply:`);
+      console.log(`[${timeStringWithSec} IST] Found ${bulkOps.length} status transition(s) to apply immediately:`);
       updated.forEach(item => {
-        console.log(` - Restaurant ${item.name} (ID: ${item.restaurantId}): ${item.prevStatus} -> ${item.newStatus} [${item.reason}] (Open: ${item.openTime}, Close: ${item.closeTime})`);
+        console.log(` -> Restaurant ${item.name} (ID: ${item.restaurantId}): ${item.prevStatus} -> ${item.newStatus} [${item.reason}] (Open: ${item.openTime}, Close: ${item.closeTime})`);
       });
 
       await RestaurantUser.bulkWrite(bulkOps, { ordered: false });
-      console.log('Successfully updated restaurant statuses in restuarentusers collection.');
-    } else {
-      console.log('All restaurant statuses are already up to date.');
-    }
 
-    if (skippedManual.length > 0) {
-      console.log(`Respected ${skippedManual.length} manual restaurant overrides:`);
-      skippedManual.forEach(item => {
-        console.log(` - Restaurant ${item.name} (ID: ${item.restaurantId}): kept ${item.status ? 'ONLINE' : 'OFFLINE'} (scheduled would be ${item.scheduledShouldBe ? 'OPEN' : 'CLOSED'})`);
-      });
+      // Also keep restaurantstatuses collection in sync if present
+      if (statusOps.length > 0) {
+        try {
+          await mongoose.connection.db.collection('restaurantstatuses').bulkWrite(statusOps, { ordered: false });
+        } catch (e) {
+          // Silently ignore if collection not present
+        }
+      }
+
+      console.log(`[${timeStringWithSec} IST] Successfully updated ${bulkOps.length} restaurant status(es) in MongoDB.`);
+    } else if (currentMins !== lastLogMinute) {
+      // Log periodic status once per minute so logs stay clean
+      lastLogMinute = currentMins;
+      console.log(`[${timeStringWithSec} IST] Heartbeat: all ${users.length} restaurant statuses are verified and up to date.`);
     }
 
     lastRunStatus = {
       success: true,
       timestamp: new Date().toISOString(),
       currentTimeIST,
+      timeStringWithSec,
       dateIST: dateStr,
       message: `Processed ${users.length} restaurants. Applied ${bulkOps.length} updates. Respected ${skippedManual.length} manual overrides.`,
       updatedRestaurants: updated,
@@ -271,32 +313,40 @@ async function checkAndUpdateRestaurantStatuses() {
     lastRunStatus = {
       success: false,
       timestamp: new Date().toISOString(),
-      currentTimeIST,
       message: `Error: ${error.message}`,
       updatedRestaurants: [],
       respectedManualOverrides: []
     };
     return lastRunStatus;
+  } finally {
+    isProcessing = false;
   }
 }
+
+// 3. Connect to MongoDB and Start 1-Second Real-Time Scheduler
+const CHECK_INTERVAL_MS = 1000; // Check EVERY 1 SECOND for zero-delay instant open/close!
 
 console.log('Connecting to MongoDB...');
 mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB successfully!');
 
+    // Run initial check immediately on boot
     checkAndUpdateRestaurantStatuses();
 
-    cron.schedule('* * * * *', () => {
+    // Start 1-second high-precision interval for instant transitions (ZERO delay!)
+    setInterval(() => {
       checkAndUpdateRestaurantStatuses();
-    });
-    console.log('Scheduler loaded successfully. Status check scheduled for every minute (* * * * *).');
+    }, CHECK_INTERVAL_MS);
+
+    console.log(`High-precision real-time scheduler active! Checking every ${CHECK_INTERVAL_MS / 1000}s for instant zero-delay transitions.`);
   })
   .catch(err => {
     console.error('Failed to connect to MongoDB:', err);
     process.exit(1);
   });
 
+// 4. HTTP Health Check & Manual Trigger Endpoints
 const PORT = process.env.PORT || 3088;
 const HOST = process.env.HOST || '0.0.0.0';
 const RAILWAY_INTERNAL_URL = process.env.RAILWAY_INTERNAL_URL || 'http://autocloseandopenoft5herestaurentapplication.railway.internal';
@@ -308,6 +358,7 @@ const server = http.createServer(async (req, res) => {
       status: 'healthy',
       time: new Date().toISOString(),
       railwayInternalUrl: RAILWAY_INTERNAL_URL,
+      checkFrequency: '1 second (real-time)',
       scheduler: lastRunStatus
     }, null, 2));
   } else if (req.url === '/run-now' || req.url === '/trigger') {
